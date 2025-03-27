@@ -172,403 +172,97 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask import Flask, render_template, request, redirect, url_for
 from flask_wtf import FlaskForm
-from wtforms import StringField, PasswordField, FloatField, IntegerField, SelectField, SubmitField, FileField
-from wtforms.validators import DataRequired, Length
-from werkzeug.security import generate_password_hash, check_password_hash
-import os
-from datetime import datetime, timedelta
-import random
+from wtforms import StringField, FloatField, DateField, SelectField
+from wtforms.validators import DataRequired
+from flask_sqlalchemy import SQLAlchemy
 import pandas as pd
-import plotly.express as px
-import plotly.io as pio
-from io import StringIO
+import datetime
 
-# Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key'  # Replace with a secure key
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///sports.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['UPLOAD_FOLDER'] = 'uploads'
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-
-# Initialize database
+app.config['SECRET_KEY'] = 'your_secret_key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///activities.db'
 db = SQLAlchemy(app)
 
-# Initialize Flask-Login
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'login'
-
-# User model
-class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(120), nullable=False)
-
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
-# Activity model
 class Activity(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     date = db.Column(db.DateTime, nullable=False)
-    type = db.Column(db.String(50), nullable=False)  # e.g., Running, Cycling, Swimming
-    distance = db.Column(db.Float, nullable=False)  # in kilometers
-    duration = db.Column(db.Integer, nullable=False)  # in seconds
-    elevation_gain = db.Column(db.Integer, nullable=True)  # in meters
-    calories = db.Column(db.Integer, nullable=True)  # in kcal
-    notes = db.Column(db.String(200), nullable=True)
-
-# Forms
-class LoginForm(FlaskForm):
-    username = StringField('Username', validators=[DataRequired(), Length(min=4, max=80)])
-    password = PasswordField('Password', validators=[DataRequired()])
-    submit = SubmitField('Login')
-
-class RegisterForm(FlaskForm):
-    username = StringField('Username', validators=[DataRequired(), Length(min=4, max=80)])
-    password = PasswordField('Password', validators=[DataRequired(), Length(min=6)])
-    submit = SubmitField('Register')
+    type = db.Column(db.String(50), nullable=False)
+    distance = db.Column(db.Float, nullable=False)
+    elevation_gain = db.Column(db.Float, default=0.0)
 
 class ActivityForm(FlaskForm):
-    date = StringField('Date (YYYY-MM-DD)', validators=[DataRequired()])
-    type = SelectField('Type', choices=[('Running', 'Running'), ('Cycling', 'Cycling'), ('Swimming', 'Swimming')], validators=[DataRequired()])
+    date = DateField('Date', format='%Y-%m-%d', validators=[DataRequired()])
+    type = SelectField('Type', choices=[('Run', 'Run'), ('Bike', 'Bike'), ('Swim', 'Swim')], validators=[DataRequired()])
     distance = FloatField('Distance (km)', validators=[DataRequired()])
-    duration = IntegerField('Duration (minutes)', validators=[DataRequired()])
-    elevation_gain = IntegerField('Elevation Gain (m)', default=0)
-    calories = IntegerField('Calories (kcal)', default=0)
-    notes = StringField('Notes')
-    submit = SubmitField('Add Activity')
+    elevation_gain = FloatField('Elevation Gain (m)', default=0.0)
 
-class FilterForm(FlaskForm):
-    start_date = StringField('Start Date (YYYY-MM-DD)')
-    end_date = StringField('End Date (YYYY-MM-DD)')
-    type = SelectField('Type', choices=[('', 'All'), ('Running', 'Running'), ('Cycling', 'Cycling'), ('Swimming', 'Swimming')], default='')
-    submit = SubmitField('Filter')
-
-class UploadForm(FlaskForm):
-    file = FileField('Upload CSV', validators=[DataRequired()])
-    submit = SubmitField('Upload')
-
-# Flask-Login user loader
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
-
-# Generate sample data for new users
-def generate_sample_data(user_id):
-    activity_types = ['Running', 'Cycling', 'Swimming']
-    for _ in range(50):  # Generate 50 sample activities
-        date = datetime.now() - timedelta(days=random.randint(1, 365))
-        type = random.choice(activity_types)
-        distance = round(random.uniform(5, 20), 2)
-        duration = random.randint(1800, 7200)  # 30 min to 2 hours in seconds
-        elevation_gain = random.randint(0, 500) if type != 'Swimming' else 0
-        calories = random.randint(200, 1000)
-        activity = Activity(user_id=user_id, date=date, type=type, distance=distance, duration=duration,
-                            elevation_gain=elevation_gain, calories=calories, notes='Sample activity')
-        db.session.add(activity)
-    db.session.commit()
-
-# Routes
 @app.route('/')
 def index():
-    if current_user.is_authenticated:
-        total_distance = db.session.query(db.func.sum(Activity.distance)).filter_by(user_id=current_user.id).scalar() or 0
-        total_activities = Activity.query.filter_by(user_id=current_user.id).count()
-        return render_template('index.html', total_distance=total_distance, total_activities=total_activities)
-    return redirect(url_for('login'))
+    activities = Activity.query.all()
+    return render_template('index.html', activities=activities)
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
-    form = LoginForm()
-    if form.validate_on_submit():
-        user = User.query.filter_by(username=form.username.data).first()
-        if user and user.check_password(form.password.data):
-            login_user(user)
-            return redirect(url_for('index'))
-        flash('Invalid username or password')
-    return render_template('login.html', form=form)
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
-    form = RegisterForm()
-    if form.validate_on_submit():
-        if User.query.filter_by(username=form.username.data).first():
-            flash('Username already exists')
-        else:
-            user = User(username=form.username.data)
-            user.set_password(form.password.data)
-            db.session.add(user)
-            db.session.commit()
-            generate_sample_data(user.id)  # Generate sample data for new user
-            flash('Registration successful! Please log in.')
-            return redirect(url_for('login'))
-    return render_template('register.html', form=form)
-
-@app.route('/logout')
-@login_required
-def logout():
-    logout_user()
-    return redirect(url_for('login'))
-
-@app.route('/activities', methods=['GET', 'POST'])
-@login_required
-def activities():
-    form = FilterForm()
-    query = Activity.query.filter_by(user_id=current_user.id)
-    
-    if form.validate_on_submit():
-        if form.start_date.data:
-            query = query.filter(Activity.date >= datetime.strptime(form.start_date.data, '%Y-%m-%d'))
-        if form.end_date.data:
-            query = query.filter(Activity.date <= datetime.strptime(form.end_date.data, '%Y-%m-%d'))
-        if form.type.data:
-            query = query.filter_by(type=form.type.data)
-    
-    activities = query.all()
-    return render_template('activities.html', activities=activities, form=form)
-
-@app.route('/add_activity', methods=['GET', 'POST'])
-@login_required
+@app.route('/add', methods=['GET', 'POST'])
 def add_activity():
     form = ActivityForm()
     if form.validate_on_submit():
-        date = datetime.strptime(form.date.data, '%Y-%m-%d')
-        duration_seconds = form.duration.data * 60  # Convert minutes to seconds
-        activity = Activity(user_id=current_user.id, date=date, type=form.type.data, distance=form.distance.data,
-                            duration=duration_seconds, elevation_gain=form.elevation_gain.data, 
-                            calories=form.calories.data, notes=form.notes.data)
-        db.session.add(activity)
+        new_activity = Activity(
+            date=form.date.data,
+            type=form.type.data,
+            distance=form.distance.data,
+            elevation_gain=form.elevation_gain.data or 0.0
+        )
+        db.session.add(new_activity)
         db.session.commit()
-        flash('Activity added successfully!')
-        return redirect(url_for('activities'))
+        return redirect(url_for('index'))
     return render_template('add_activity.html', form=form)
 
-@app.route('/upload_csv', methods=['GET', 'POST'])
-@login_required
-def upload_csv():
-    form = UploadForm()
-    if form.validate_on_submit():
-        file = form.file.data
-        if file and file.filename.endswith('.csv'):
-            df = pd.read_csv(file)
-            required_columns = ['date', 'type', 'distance', 'duration']
-            if all(col in df.columns for col in required_columns):
-                for _, row in df.iterrows():
-                    date = datetime.strptime(row['date'], '%Y-%m-%d')
-                    duration_seconds = int(row['duration']) * 60  # Assuming duration in minutes
-                    activity = Activity(user_id=current_user.id, date=date, type=row['type'], distance=row['distance'],
-                                        duration=duration_seconds, elevation_gain=row.get('elevation_gain', 0),
-                                        calories=row.get('calories', 0), notes=row.get('notes', ''))
-                    db.session.add(activity)
-                db.session.commit()
-                flash('CSV uploaded successfully!')
-                return redirect(url_for('activities'))
-            else:
-                flash('CSV must contain columns: date, type, distance, duration')
-        else:
-            flash('Please upload a valid CSV file')
-    return render_template('upload_csv.html', form=form)
+@app.route('/upload', methods=['POST'])
+def upload():
+    file = request.files['file']
+    if file:
+        df = pd.read_csv(file)
+        df = df.fillna(0)
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.dropna(subset=['date'])
+        
+        for _, row in df.iterrows():
+            activity = Activity(
+                date=row['date'],
+                type=row['type'],
+                distance=row['distance'],
+                elevation_gain=row.get('elevation_gain', 0)
+            )
+            db.session.add(activity)
+        db.session.commit()
+    return redirect(url_for('index'))
 
 @app.route('/visualizations')
-@login_required
 def visualizations():
-    activities = Activity.query.filter_by(user_id=current_user.id).all()
-    df = pd.DataFrame([(a.date, a.type, a.distance, a.duration / 3600, a.calories) for a in activities],
-                      columns=['date', 'type', 'distance', 'duration_hours', 'calories'])
-    
-    if df.empty:
-        return render_template('visualizations.html', plots=[])
-    
-    # Line chart: Distance over time
-    df['speed'] = df['distance'] / df['duration_hours']  # Calculate speed in km/h
-    line_fig = px.line(df, x='date', y='distance', title='Distance Over Time')
-    line_plot = pio.to_html(line_fig, full_html=False)
-
-    # Histogram: Speed distribution
-    hist_fig = px.histogram(df, x='speed', nbins=20, title='Speed Distribution (km/h)')
-    hist_plot = pio.to_html(hist_fig, full_html=False)
-
-    # Bar chart: Total distance by month
+    activities = Activity.query.all()
+    df = pd.DataFrame([(a.date, a.type, a.distance, a.elevation_gain) for a in activities],
+                      columns=['date', 'type', 'distance', 'elevation_gain'])
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df = df.dropna(subset=['date'])
     df['month'] = df['date'].dt.to_period('M').astype(str)
-    bar_df = df.groupby('month')['distance'].sum().reset_index()
-    bar_fig = px.bar(bar_df, x='month', y='distance', title='Total Distance by Month')
-    bar_plot = pio.to_html(bar_fig, full_html=False)
-
-    # Pie chart: Activity type proportions
+    
     pie_df = df['type'].value_counts().reset_index()
-    pie_fig = px.pie(pie_df, values='count', names='type', title='Activity Type Proportions')
-    pie_plot = pio.to_html(pie_fig, full_html=False)
-
-    plots = [line_plot, hist_plot, bar_plot, pie_plot]
-    return render_template('visualizations.html', plots=plots)
-
-# Create database tables
-with app.app_context():
-    db.create_all()
+    pie_df.columns = ['type', 'count']
+    
+    return render_template('visualizations.html', pie_data=pie_df.to_dict(orient='records'))
 
 if __name__ == '__main__':
-    app.run(debug=True)
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sports Activity Tracker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="{{ url_for('index') }}">Sports Tracker</a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                {% if current_user.is_authenticated %}
-                    <ul class="navbar-nav">
-                        <li class="nav-item"><a class="nav-link" href="{{ url_for('activities') }}">Activities</a></li>
-                        <li class="nav-item"><a class="nav-link" href="{{ url_for('add_activity') }}">Add Activityçam</a></li>
-                        <li class="nav-item"><a class="nav-link" href="{{ url_for('upload_csv') }}">Upload CSV</a></li>
-                        <li class="nav-item"><a class="nav-link" href="{{ url_for('visualizations') }}">Visualizations</a></li>
-                        <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
-                    </ul>
-                {% endif %}
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="alert alert-info">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        {% block content %}{% endblock %}
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
-{% extends "base.html" %}
-{% block content %}
-    <h1>Welcome, {{ current_user.username }}!</h1>
-    <p>Total Distance: {{ total_distance }} km</p>
-    <p>Total Activities: {{ total_activities }}</p>
-{% endblock %}
-{% extends "base.html" %}
-{% block content %}
-    <h2>Login</h2>
-    <form method="POST">
-        {{ form.hidden_tag() }}
-        <div class="mb-3">
-            {{ form.username.label(class="form-label") }} {{ form.username(class="form-control") }}
-        </div>
-        <div class="mb-3">
-            {{ form.password.label(class="form-label") }} {{ form.password(class="form-control") }}
-        </div>
-        {{ form.submit(class="btn btn-primary") }}
-    </form>
-    <p>Not registered? <a href="{{ url_for('register') }}">Register here</a></p>
-{% endblock %}
-{% extends "base.html" %}
-{% block content %}
-    <h2>Register</h2>
-    <form method="POST">
-        {{ form.hidden_tag() }}
-        <div class="mb-3">
-            {{ form.username.label(class="form-label") }} {{ form.username(class="form-control") }}
-        </div>
-        <div class="mb-3">
-            {{ form.password.label(class="form-label") }} {{ form.password(class="form-control") }}
-        </div>
-        {{ form.submit(class="btn btn-primary") }}
-    </form>
-{% endblock %}
-{% extends "base.html" %}
-{% block content %}
-    <h2>Your Activities</h2>
-    <form method="POST" class="mb-4">
-        {{ form.hidden_tag() }}
-        <div class="row">
-            <div class="col-md-3">{{ form.start_date.label }} {{ form.start_date(class="form-control") }}</div>
-            <div class="col-md-3">{{ form.end_date.label }} {{ form.end_date(class="form-control") }}</div>
-            <div class="col-md-3">{{ form.type.label }} {{ form.type(class="form-control") }}</div>
-            <div class="col-md-3">{{ form.submit(class="btn btn-primary mt-4") }}</div>
-        </div>
-    </form>
-    <table class="table table-striped">
-        <thead>
-            <tr>
-                <th>Date</th>
-                <th>Type</th>
-                <th>Distance (km)</th>
-                <th>Duration (min)</th>
-                <th>Elevation (m)</th>
-                <th>Calories</th>
-                <th>Notes</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for activity in activities %}
-                <tr>
-                    <td>{{ activity.date.strftime('%Y-%m-%d') }}</td>
-                    <td>{{ activity.type }}</td>
-                    <td>{{ activity.distance }}</td>
-                    <td>{{ (activity.duration / 60) | int }}</td>
-                    <td>{{ activity.elevation_gain or 0 }}</td>
-                    <td>{{ activity.calories or 0 }}</td>
-                    <td>{{ activity.notes or '' }}</td>
-                </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-{% endblock %}{% extends "base.html" %}
-{% block content %}
-    <h2>Add New Activity</h2>
-    <form method="POST">
-        {{ form.hidden_tag() }}
-        <div class="mb-3">{{ form.date.label(class="form-label") }} {{ form.date(class="form-control") }}</div>
-        <div class="mb-3">{{ form.type.label(class="form-label") }} {{ form.type(class="form-control") }}</div>
-        <div class="mb-3">{{ form.distance.label(class="form-label") }} {{ form.distance(class="form-control") }}</div>
-        <div class="mb-3">{{ form.duration.label(class="form-label") }} {{ form.duration(class="form-control") }}</div>
-        <div class="mb-3">{{ form.elevation_gain.label(class="form-label") }} {{ form.elevation_gain(class="form-control") }}</div>
-        <div class="mb-3">{{ form.calories.label(class="form-label") }} {{ form.calories(class="form-control") }}</div>
-        <div class="mb-3">{{ form.notes.label(class="form-label") }} {{ form.notes(class="form-control") }}</div>
-        {{ form.submit(class="btn btn-primary") }}
-    </form>
-{% endblock %}
-{% extends "base.html" %}
-{% block content %}
-    <h2>Upload Activities from CSV</h2>
-    <p>CSV should have columns: date (YYYY-MM-DD), type, distance, duration (minutes), (optional: elevation_gain, calories, notes)</p>
-    <form method="POST" enctype="multipart/form-data">
-        {{ form.hidden_tag() }}
-        <div class="mb-3">{{ form.file.label(class="form-label") }} {{ form.file(class="form-control") }}</div>
-        {{ form.submit(class="btn btn-primary") }}
-    </form>
-{% endblock %}
-{% extends "base.html" %}
-{% block content %}
-    <h2>Your Visualizations</h2>
-    {% if plots %}
-        {% for plot in plots %}
-            <div class="mb-4">{{ plot | safe }}</div>
-        {% endfor %}
-    {% else %}
+    with app.app_context():
+        db.create_all()
+    try:
+        app.run(debug=True)
+    except ModuleNotFoundError as e:
+        if "_multiprocessing" in str(e):
+            print("Error: The '_multiprocessing' module is missing. Ensure that your Python installation is complete and properly configured.")
+        else:
+            raise
+
         <p>No activities to visualize yet.</p>
     {% endif %}
 {% endblock %}
